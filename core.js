@@ -11,13 +11,12 @@
 export const manifest = {
   id: 'dl-excerpt',
   name: '발췌기 연결',
-  version: '0.2.0',
+  version: '0.2.1',
   author: 'romantic-lamb',
   description: '드림랜드 안에서 발췌기를 열어, 보고 있는 채팅을 이미지 · PDF · HTML 발췌본으로 만듭니다. 메시지 메뉴의 ‘발췌기로 보내기’나 장면 패널에서 씁니다.',
 };
 
 const PAGE_URL = 'https://raw.githubusercontent.com/romantic-lamb/excerptourstory/main/index.html';
-const BASE = 'https://romantic-lamb.github.io/excerptourstory/';
 const TIMEOUT = 8000;
 
 export function activate(api) {
@@ -96,15 +95,19 @@ export function activate(api) {
     .dlx-tools { display: flex; flex-wrap: wrap; gap: 6px; }
   `);
 
-  let ov = null, frame = null, frameReady = false, queued = null;
+  // 드림랜드는 보안 정책(CSP)상 앱 화면 안에서 바깥 스크립트를 돌리지 못한다. 그래서 드림랜드가 메시지 속 HTML 화면에 쓰는
+  // 빈 틀(/frame)을 빌려 그 안에 발췌기를 쓴다. 틀은 { dlFrameReady } 를 보내 오고, { dlHtml } 을 받으면 그 문서를 쓴다
+  let ov = null, frame = null, frameReady = false, queued = null, pageHtml = null;
   const post = payload => frame.contentWindow.postMessage({ type: 'excerpt:chat', payload }, '*');
   const onMsg = e => {
-    if (!frame || e.source !== frame.contentWindow || !e.data || e.data.type !== 'excerpt:ready') return;
+    if (!frame || e.source !== frame.contentWindow || !e.data) return;
+    if (e.data.dlFrameReady != null && pageHtml) { frame.contentWindow.postMessage({ dlHtml: pageHtml, init: { script: true } }, '*'); return; }
+    if (e.data.type !== 'excerpt:ready') return;
     frameReady = true;
     if (queued) { post(queued); queued = null; }
   };
   window.addEventListener('message', onMsg);
-  const onKey = e => { if (e.key === 'Escape' && ov && !ov.hidden && !(frame && frame.contentDocument && frame.contentDocument.querySelector('dialog[open]'))) close(); };
+  const onKey = e => { if (e.key === 'Escape' && ov && !ov.hidden) close(); };
   document.addEventListener('keydown', onKey);
 
   function close() { if (ov) ov.hidden = true; }
@@ -119,10 +122,11 @@ export function activate(api) {
       wait);
     document.body.append(ov);
     loadPage().then(html => {
-      // 페이지 안의 상대 주소가 GitHub Pages 쪽을 가리키게
-      html = html.replace(/<head>/i, `<head><base href="${BASE}">`);
+      pageHtml = html;
       frame = h('iframe.dlx-frame', { title: '발췌기', allow: 'clipboard-write' });
-      frame.srcdoc = html;
+      // allow-same-origin: 발췌기가 꾸미기 값 · 쓰던 글을 브라우저에 기억하고 이미지를 복사하려면 필요하다 (내 저장소의 발췌기만 띄운다)
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-modals allow-downloads');
+      frame.src = new URL('/frame', location.origin).href;
       wait.replaceWith(frame);
     }).catch(e => { wait.textContent = e.message || String(e); });
   }
