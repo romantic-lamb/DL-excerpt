@@ -11,7 +11,7 @@
 export const manifest = {
   id: 'dl-excerpt',
   name: '발췌기 연결',
-  version: '0.2.1',
+  version: '0.2.2',
   author: 'romantic-lamb',
   description: '드림랜드 안에서 발췌기를 열어, 보고 있는 채팅을 이미지 · PDF · HTML 발췌본으로 만듭니다. 메시지 메뉴의 ‘발췌기로 보내기’나 장면 패널에서 씁니다.',
 };
@@ -23,7 +23,7 @@ export function activate(api) {
   const { h, btn, iconBtn, toast } = api;
 
   // ── 설정: 본문(번역/원문) · 숨긴 메시지 · 시스템 메시지 · 미리 골라 둘 최근 메시지 수 ──
-  let opt = { text: 'tr', hidden: false, system: false, recent: 0 };
+  let opt = { text: 'tr', hidden: false, system: false, recent: 0, big: false };
   const ready = api.store.get('opt', null).then(v => { if (v && typeof v === 'object') opt = { ...opt, ...v }; });
   const saveOpt = () => api.store.set('opt', opt);
 
@@ -81,11 +81,22 @@ export function activate(api) {
 
   // ── 화면 안의 발췌기 창 ──
   api.style(`
-    .dlx-ov { position: fixed; inset: 0; z-index: 9000; display: flex; flex-direction: column; background: var(--bg, #111); }
+    .dlx-ov { position: fixed; inset: 0; z-index: 9000; display: flex; }
     .dlx-ov[hidden] { display: none; }
+    .dlx-win { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; background: var(--bg, #111); overflow: hidden; }
     .dlx-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px; padding-top: max(6px, env(safe-area-inset-top)); border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); background: var(--surface, inherit); }
     .dlx-bar b { flex: 1 1 auto; font-size: .95em; }
+    .dlx-size { display: none; }
     .dlx-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; }
+    /* 넓은 화면: 가운데 뜬 창. 바깥을 누르면 닫힌다 (쓰던 내용은 남는다) */
+    @media (min-width: 900px) {
+      .dlx-ov { align-items: center; justify-content: center; padding: 3vh 3vw; background: rgba(0, 0, 0, .45); }
+      .dlx-win { flex: 0 1 auto; width: min(1200px, 100%); height: min(860px, 100%); border-radius: 12px; box-shadow: 0 18px 60px rgba(0, 0, 0, .45); }
+      .dlx-bar { padding-top: 6px; }
+      .dlx-size { display: inline-flex; }
+      .dlx-ov.big { padding: 0; }
+      .dlx-ov.big .dlx-win { width: 100%; height: 100%; border-radius: 0; }
+    }
     .dlx-wait { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: .9em; }
     .dlx { display: flex; flex-direction: column; gap: 12px; }
     .dlx-sec { display: flex; flex-direction: column; gap: 6px; }
@@ -114,12 +125,17 @@ export function activate(api) {
   function ensureOverlay() {
     if (ov) { ov.hidden = false; return; }
     const wait = h('div.dlx-wait', '발췌기를 불러오는 중…');
-    ov = h('div.dlx-ov',
-      h('div.dlx-bar',
-        h('b', '발췌기'),
-        btn('지금 채팅 다시 넣기', { ic: 'import', cls: 'ghost', onclick: () => { const c = api.chat.current(); if (c.chat) send(c.chat, c.msgs, recentIds(c.msgs, opt.recent)); } }),
-        iconBtn('x', '닫기 (쓰던 내용은 남아요)', close)),
-      wait);
+    const size = iconBtn('panel', '', () => { opt.big = !opt.big; saveOpt(); fitSize(); }, 'dlx-size');
+    const fitSize = () => { ov.classList.toggle('big', !!opt.big); const t = opt.big ? '창으로 줄이기' : '화면에 꽉 채우기'; size.title = t; size.setAttribute('aria-label', t); };
+    ov = h('div.dlx-ov', { onclick: e => { if (e.target === ov) close(); } },
+      h('div.dlx-win',
+        h('div.dlx-bar',
+          h('b', '발췌기'),
+          btn('지금 채팅 다시 넣기', { ic: 'import', cls: 'ghost', onclick: () => { const c = api.chat.current(); if (c.chat) send(c.chat, c.msgs, recentIds(c.msgs, opt.recent)); } }),
+          size,
+          iconBtn('x', '닫기 (쓰던 내용은 남아요)', close)),
+        wait));
+    fitSize();
     document.body.append(ov);
     loadPage().then(html => {
       pageHtml = html;
