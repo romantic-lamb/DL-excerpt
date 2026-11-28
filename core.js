@@ -11,7 +11,7 @@
 export const manifest = {
   id: 'dl-excerpt',
   name: '발췌기 연결',
-  version: '0.2.2',
+  version: '0.3.0',
   author: 'romantic-lamb',
   description: '드림랜드 안에서 발췌기를 열어, 보고 있는 채팅을 이미지 · PDF · HTML 발췌본으로 만듭니다. 메시지 메뉴의 ‘발췌기로 보내기’나 장면 패널에서 씁니다.',
 };
@@ -23,7 +23,7 @@ export function activate(api) {
   const { h, btn, iconBtn, toast } = api;
 
   // ── 설정: 본문(번역/원문) · 숨긴 메시지 · 시스템 메시지 · 미리 골라 둘 최근 메시지 수 ──
-  let opt = { text: 'tr', hidden: false, system: false, recent: 0, big: false };
+  let opt = { text: 'tr', hidden: false, system: false, recent: 0, big: false, pick: true };
   const ready = api.store.get('opt', null).then(v => { if (v && typeof v === 'object') opt = { ...opt, ...v }; });
   const saveOpt = () => api.store.set('opt', opt);
 
@@ -98,6 +98,9 @@ export function activate(api) {
       .dlx-ov.big .dlx-win { width: 100%; height: 100%; border-radius: 0; }
     }
     .dlx-wait { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: .9em; }
+    .dlx-pick { position: fixed; z-index: 8999; display: flex; gap: 4px; padding: 4px; border-radius: 10px; background: var(--surface, #222); box-shadow: 0 6px 24px rgba(0, 0, 0, .35); border: 1px solid var(--line, rgba(127,127,127,.25)); }
+    .dlx-pick[hidden] { display: none; }
+    .dlx-pick .btn { white-space: nowrap; }
     .dlx { display: flex; flex-direction: column; gap: 12px; }
     .dlx-sec { display: flex; flex-direction: column; gap: 6px; }
     .dlx-sec > b { font-size: .86em; color: var(--dim); }
@@ -108,22 +111,22 @@ export function activate(api) {
 
   // 드림랜드는 보안 정책(CSP)상 앱 화면 안에서 바깥 스크립트를 돌리지 못한다. 그래서 드림랜드가 메시지 속 HTML 화면에 쓰는
   // 빈 틀(/frame)을 빌려 그 안에 발췌기를 쓴다. 틀은 { dlFrameReady } 를 보내 오고, { dlHtml } 을 받으면 그 문서를 쓴다
-  let ov = null, frame = null, frameReady = false, queued = null, pageHtml = null;
+  let ov = null, frame = null, frameReady = false, queued = [], pageHtml = null;
   const post = payload => frame.contentWindow.postMessage({ type: 'excerpt:chat', payload }, '*');
   const onMsg = e => {
     if (!frame || e.source !== frame.contentWindow || !e.data) return;
     if (e.data.dlFrameReady != null && pageHtml) { frame.contentWindow.postMessage({ dlHtml: pageHtml, init: { script: true } }, '*'); return; }
     if (e.data.type !== 'excerpt:ready') return;
     frameReady = true;
-    if (queued) { post(queued); queued = null; }
+    for (const q of queued.splice(0)) post(q);
   };
   window.addEventListener('message', onMsg);
   const onKey = e => { if (e.key === 'Escape' && ov && !ov.hidden) close(); };
   document.addEventListener('keydown', onKey);
 
   function close() { if (ov) ov.hidden = true; }
-  function ensureOverlay() {
-    if (ov) { ov.hidden = false; return; }
+  function ensureOverlay(show = true) {
+    if (ov) { if (show) ov.hidden = false; return; }
     const wait = h('div.dlx-wait', '발췌기를 불러오는 중…');
     const size = iconBtn('panel', '', () => { opt.big = !opt.big; saveOpt(); fitSize(); }, 'dlx-size');
     const fitSize = () => { ov.classList.toggle('big', !!opt.big); const t = opt.big ? '창으로 줄이기' : '화면에 꽉 채우기'; size.title = t; size.setAttribute('aria-label', t); };
@@ -136,6 +139,7 @@ export function activate(api) {
           iconBtn('x', '닫기 (쓰던 내용은 남아요)', close)),
         wait));
     fitSize();
+    ov.hidden = !show;
     document.body.append(ov);
     loadPage().then(html => {
       pageHtml = html;
@@ -153,9 +157,82 @@ export function activate(api) {
       const payload = build(chat, msgs, pickIds);
       if (!payload.msgs.length) { toast('보낼 메시지가 없어요', 'err'); return; }
       ensureOverlay();
-      if (frame && frameReady) post(payload); else queued = payload;
+      if (frame && frameReady) post(payload); else queued.push(payload);
     });
   }
+
+
+  // ── 채팅에서 글을 골랐을 때: ‘발췌하기’ 단추 ──
+  // 고른 글을 메시지마다 나눠 화자와 함께 발췌기 칸으로 바로 넣는다. 드림랜드가 따옴표를 떼고 그린 대사는 따옴표를 되살린다
+  const QUOTE = /^["“「『]/, THINK = /^['‘]/;
+  function textOf(frag) {
+    const box = h('div', { style: { position: 'fixed', left: '-99999px', top: '0', width: '600px', whiteSpace: 'pre-wrap' } });
+    box.append(frag);
+    document.body.append(box);
+    try {
+      box.querySelectorAll('.msg-tools, .msg-head, .reason, .msg-memo, .msg-images, button, script, style').forEach(el => el.remove());
+      for (const el of box.querySelectorAll('.say')) { const t = el.textContent.trim(); if (t && !QUOTE.test(t)) el.textContent = `"${t}"`; }
+      for (const el of box.querySelectorAll('.think')) { const t = el.textContent.trim(); if (t && !THINK.test(t)) el.textContent = `‘${t}’`; }
+      return box.innerText.replace(/\n{3,}/g, '\n\n').trim();
+    } finally { box.remove(); }
+  }
+  function readSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    const root = document.querySelector('.msgs');
+    if (!root || !root.contains(range.commonAncestorContainer)) return null;
+    const { msgs } = api.chat.current();
+    const out = [];
+    for (const art of root.querySelectorAll('article.msg[data-id]')) {
+      if (!range.intersectsNode(art)) continue;
+      const body = art.querySelector('.msg-body');
+      if (!body || !range.intersectsNode(body)) continue;
+      const r = document.createRange();
+      r.selectNodeContents(body);
+      if (range.compareBoundaryPoints(Range.START_TO_START, r) > 0) r.setStart(range.startContainer, range.startOffset);
+      if (range.compareBoundaryPoints(Range.END_TO_END, r) < 0) r.setEnd(range.endContainer, range.endOffset);
+      const mes = textOf(r.cloneContents());
+      if (!mes) continue;
+      const m = (msgs || []).find(x => x.id === art.dataset.id);
+      const name = m ? (m.role === 'system' ? '' : m.name || '') : (art.querySelector('.msg-head b')?.textContent || '');
+      out.push({ name, is_user: !!m && m.role === 'user', mes });
+    }
+    return out.length ? { items: out, rect: range.getBoundingClientRect() } : null;
+  }
+
+  function addSnippets(items, open) {
+    const payload = { v: 1, add: items };
+    ensureOverlay(open);
+    if (frame && frameReady) post(payload); else queued.push(payload);
+    if (!open) toast('발췌기에 담았어요. 다 모았으면 마지막 글에서 ‘발췌하기’를 누르거나 장면 패널의 ‘보내지 않고 열기’로 여세요', 'ok');
+  }
+
+  let picked = null, pickT = 0;
+  const pickBar = h('div.dlx-pick', { hidden: true, onpointerdown: e => e.preventDefault(), onmousedown: e => e.preventDefault() },
+    btn('발췌하기', { ic: 'image', onclick: () => { if (picked) addSnippets(picked, true); hidePick(); } }),
+    btn('담기', { ic: 'plus', cls: 'ghost', onclick: () => { if (picked) addSnippets(picked, false); hidePick(); } }));
+  document.body.append(pickBar);
+  const hidePick = () => { pickBar.hidden = true; picked = null; };
+  const coarse = window.matchMedia ? window.matchMedia('(pointer: coarse)') : { matches: false };
+  function placePick() {
+    const got = opt.pick && !(ov && !ov.hidden) ? readSelection() : null;
+    if (!got) { hidePick(); return; }
+    picked = got.items;
+    pickBar.hidden = false;
+    const r = got.rect, w = pickBar.offsetWidth || 180, hgt = pickBar.offsetHeight || 36, vw = window.innerWidth, vh = window.innerHeight;
+    // 휴대폰은 글 위에 기본 메뉴(복사 등)가 뜨므로 아래에 둔다
+    let top = coarse.matches ? r.bottom + 10 : r.top - hgt - 8;
+    if (top < 8) top = r.bottom + 10;
+    if (top + hgt > vh - 8) top = Math.max(8, r.top - hgt - 8);
+    const left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), vw - w - 8);
+    pickBar.style.top = `${Math.round(top)}px`;
+    pickBar.style.left = `${Math.round(left)}px`;
+  }
+  const onSel = () => { clearTimeout(pickT); pickT = setTimeout(placePick, 180); };
+  document.addEventListener('selectionchange', onSel);
+  const onScroll = () => { if (!pickBar.hidden) placePick(); };
+  window.addEventListener('scroll', onScroll, true);
 
   // ── 메시지 메뉴: 이 메시지를 골라 둔 채로 발췌기를 연다 ──
   api.messageAction({
@@ -175,6 +252,9 @@ export function activate(api) {
         sel('text', [['tr', '번역이 있으면 번역문'], ['orig', '늘 원문']]),
         chk('hidden', '숨긴 메시지도 보내기'),
         chk('system', '시스템 메시지도 보내기')),
+      h('div.dlx-sec', h('b', '글 골라 발췌하기'),
+        chk('pick', '채팅에서 글을 고르면 ‘발췌하기’ 단추 띄우기'),
+        h('div.dlx-hint', '‘발췌하기’는 고른 글을 발췌기 칸으로 넣고 발췌기를 열어요. ‘담기’는 열지 않고 넣어 두기만 해서, 여러 곳을 차례로 모을 수 있어요.')),
       h('div.dlx-sec', h('b', '미리 골라 두기'),
         sel('recent', [[0, '고르지 않음 (발췌기에서 고르기)'], [10, '최근 10개'], [20, '최근 20개'], [50, '최근 50개']]),
         h('div.dlx-hint', '발췌기의 메시지 고르기 창에 미리 체크해 둬요. 거기서 더 고르거나 뺄 수 있어요. 메시지 하나만 보내려면 그 메시지 메뉴의 ‘발췌기로 보내기’를 누르세요.')),
@@ -201,6 +281,10 @@ export function activate(api) {
   });
 
   return () => {
+    document.removeEventListener('selectionchange', onSel);
+    window.removeEventListener('scroll', onScroll, true);
+    clearTimeout(pickT);
+    pickBar.remove();
     window.removeEventListener('message', onMsg);
     document.removeEventListener('keydown', onKey);
     if (ov) ov.remove();
